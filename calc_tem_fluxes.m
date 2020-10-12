@@ -5,8 +5,7 @@ function [vstar,wstar] = calc_tem_fluxes(lat,lev,theta_bar,v_bar,w_bar,vth_bar,c
 % This script calculates the residual velocities v-star and w-star.
 % Script originally written by Rolando Garcia
 % Updated and Matlabized by Ben Kravitz (bkravitz@iu.edu or ben.kravitz.work@gmail.com)
-% and Daniele Visioni (dv224@cornell.edu)
-% Last updated 12 October 2020
+% Last updated 8 October 2020
 %
 %
 %%%%% Inputs %%%%%
@@ -17,12 +16,12 @@ function [vstar,wstar] = calc_tem_fluxes(lat,lev,theta_bar,v_bar,w_bar,vth_bar,c
 % Zonally averaged quantities (ny x nz)
 %   theta_bar = potential temperature (K)
 %   v_bar = meridional velocity (m/s)
-%   w_bar = vertical velocity (m/s or Pa/s, see omega_flag below)
+%   w_bar = vertical velocity (m/s)
 %   vth_bar = meridional eddy flux of potential temperature (K m/s)
 %
-% ccmi_flag  = 1 if using the CCMI standard method of calculating height
+% ccmi_flag = 1 if using the CCMI standard method of calculating height
 %               (using a scale height)
-%            = 0 if computing directly from temperature (the hypsometric
+%           = 0 if computing directly from temperature (the hypsometric
 %               equation) and, optionally, water vapor mass mixing ratio
 % omega_flag = 1 if using omega (Pa/s) instead of w (m/s)
 %            = 0 if using w (m/s)
@@ -91,7 +90,7 @@ else % actually computing the height of the levels
     end
     Tv = T.*((wv+0.622)./(0.622*(1+wv))); % virtual temperature
     levplus=[lev' lev(end)/10]';
-    levfrac=log(levplus(1:end-1)./levplus(2:end));
+    levfrac=-log(levplus(1:end-1)./levplus(2:end));
     h = ((R.*Tv)/g).*repmat(levfrac,[1 ny])'; % level thickness by hypsometric equation
     zedge = zeros(192,length(lev)+1);
     for k=2:length(lev)+1
@@ -103,6 +102,7 @@ end
 
 % determining y-distance of centers of latitude bands from equator
 % and edges (needed for interpolation after taking derivatives)
+mean(z)
 colatcenters=pi/2-lat*pi/180;
 y=repmat(cos(colatcenters),[1 nz]).*(ae+z);
 latedges=(lat(1:end-1)+lat(2:end))/2; % boundaries between grid boxes
