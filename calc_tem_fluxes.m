@@ -5,7 +5,8 @@ function [vstar,wstar] = calc_tem_fluxes(lat,lev,theta_bar,v_bar,w_bar,vth_bar,c
 % This script calculates the residual velocities v-star and w-star.
 % Script originally written by Rolando Garcia
 % Updated and Matlabized by Ben Kravitz (bkravitz@iu.edu or ben.kravitz.work@gmail.com)
-% Last updated 8 October 2020
+% and Daniele Visioni (dv224@cornell.edu)
+% Last updated 12 October 2020
 %
 %
 %%%%% Inputs %%%%%
@@ -16,12 +17,12 @@ function [vstar,wstar] = calc_tem_fluxes(lat,lev,theta_bar,v_bar,w_bar,vth_bar,c
 % Zonally averaged quantities (ny x nz)
 %   theta_bar = potential temperature (K)
 %   v_bar = meridional velocity (m/s)
-%   w_bar = vertical velocity (m/s)
+%   w_bar = vertical velocity (m/s or Pa/s, see omega_flag below)
 %   vth_bar = meridional eddy flux of potential temperature (K m/s)
 %
-% ccmi_flag = 1 if using the CCMI standard method of calculating height
+% ccmi_flag  = 1 if using the CCMI standard method of calculating height
 %               (using a scale height)
-%           = 0 if computing directly from temperature (the hypsometric
+%            = 0 if computing directly from temperature (the hypsometric
 %               equation) and, optionally, water vapor mass mixing ratio
 % omega_flag = 1 if using omega (Pa/s) instead of w (m/s)
 %            = 0 if using w (m/s)
