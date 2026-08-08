@@ -4,6 +4,12 @@ function indices=etccdi(t,TN,TX,TG,P,TNb,TXb,TGb,Pb,nn,lat)
 %
 % Written by Ben Kravitz (bkravitz@iu.edu or ben.kravitz.work@gmail.com)
 % Last updated 2 February 2020
+% Bug fixes 8 August 2026 (with Claude): WSDI/CSDI spell counter reset +
+%   end-of-year spell flush; CDD/CWD return 0 (not 1) when no qualifying
+%   days; PRCPTOT wet days use >= 1 mm; GSL season-end detection no longer
+%   leaves endindex stale (and a season with no qualifying cold spell now
+%   runs to the end of the year instead of returning 0); SPII returns 0
+%   (not NaN) when a year has no wet days.
 %
 % This function takes in a set of daily frequency temperature and precipitation data
 % (observed or model output) and produces the 27 ETCCDI metrics defined here:
@@ -202,23 +208,14 @@ for k=1:nyrs-1;
             startindex=10000;
         end
         
-        zz=strfind(D,[1 0]); % looking for transitions from above to below 5°C
-        if isempty(zz)==1; % case with no transitions
-            if sum(D)==length(D); % everything is above 5°C
-                endindex=length(D);
-            elseif sum(D)==0; % everything is below 5°C
-                endindex=10000;
-            end
-        else % there is a transition
-            zz=strfind(D,[0 0 0 0 0 0]); % finding spans of 6 days
-            if isempty(zz)==1; % did not find anything
-                endindex=length(D);
-            else
-                endindex=zz(1)-1;
-            end
+        zz=strfind(D,[0 0 0 0 0 0]); % first span of 6 consecutive days below 5°C
+        if isempty(zz)==1; % no qualifying cold spell: season runs to the end of the year
+            endindex=length(D);
+        else
+            endindex=zz(1)-1; % season ends the day before the cold spell begins
         end
         
-        if ((startindex>1000) | (endindex>1000));
+        if (startindex>1000); % no growing-season start found
             GSL(j,k)=0;
         else
             GSL(j,k)=endindex+(length(C)-startindex)+1;
@@ -246,23 +243,14 @@ for j=1:prod(spacesize);
             startindex=10000;
         end
         
-        zz=strfind(D,[1 0]); % looking for transitions from above to below 5°C
-        if isempty(zz)==1; % case with no transitions
-            if sum(D)==length(D); % everything is above 5°C
-                endindex=length(D);
-            elseif sum(D)==0; % everything is below 5°C
-                endindex=10000;
-            end
-        else % there is a transition
-            zz=strfind(D,[0 0 0 0 0 0]); % finding spans of 6 days
-            if isempty(zz)==1; % did not find anything
-                endindex=length(D);
-            else
-                endindex=zz(1)-1;
-            end
+        zz=strfind(D,[0 0 0 0 0 0]); % first span of 6 consecutive days below 5°C
+        if isempty(zz)==1; % no qualifying cold spell: season runs to the end of the year
+            endindex=length(D);
+        else
+            endindex=zz(1)-1; % season ends the day before the cold spell begins
         end
         
-        if ((startindex>1000) | (endindex>1000));
+        if (startindex>1000); % no growing-season start found
             GSL(j,nyrs)=0;
         else
             GSL(j,nyrs)=endindex+(length(C)-startindex)+1;
@@ -320,7 +308,7 @@ TXN=reshape(TXN,[spacesize nyrs*12]);
 indices.TXN=TXN;
 
 %% Index 9
-% TNN = monthly minimum value of daily maximum temperature
+% TNN = monthly minimum value of daily minimum temperature
 
 TNN=zeros(prod(spacesize),nyrs*12);
 temp=reshape(TN,[prod(spacesize) length(t)]);
@@ -477,9 +465,12 @@ for z=1:nyrs;
                     else
                         if c>5;
                             exceedtemp(q,j)=exceedtemp(q,j)+c;
-                            c=1;
                         end
+                        c=1; % reset after every break, not only after qualifying spells
                     end
+                end
+                if ((isempty(I)==0) & (c>5)); % flush a qualifying spell that runs to the end of the year
+                    exceedtemp(q,j)=exceedtemp(q,j)+c;
                 end
             end
         end
@@ -517,9 +508,12 @@ for z=1:nyrs;
                     else
                         if c>5;
                             exceedtemp(q,j)=exceedtemp(q,j)+c;
-                            c=1;
                         end
+                        c=1; % reset after every break, not only after qualifying spells
                     end
+                end
+                if ((isempty(I)==0) & (c>5)); % flush a qualifying spell that runs to the end of the year
+                    exceedtemp(q,j)=exceedtemp(q,j)+c;
                 end
             end
         end
@@ -597,7 +591,11 @@ for k=1:nyrs;
     for q=1:prod(spacesize);
         J=temp2(q,:);
         K=find(J>=1);
-        SPII(q,k)=sum(J(K))/length(K);
+        if isempty(K)==1; % no wet days: intensity is 0, not 0/0
+            SPII(q,k)=0;
+        else
+            SPII(q,k)=sum(J(K))/length(K);
+        end
     end
 end
 SPII=reshape(SPII,[spacesize nyrs]);
@@ -668,7 +666,11 @@ for k=1:nyrs;
                 c=1;
             end
         end
-        CDD(q,k)=max([d c]);
+        if isempty(J)==1; % no dry days this year
+            CDD(q,k)=0;
+        else
+            CDD(q,k)=max([d c]);
+        end
     end
 end
 CDD=reshape(CDD,[spacesize nyrs]);
@@ -694,7 +696,11 @@ for k=1:nyrs;
                 c=1;
             end
         end
-        CWD(q,k)=max([d c]);
+        if isempty(J)==1; % no wet days this year
+            CWD(q,k)=0;
+        else
+            CWD(q,k)=max([d c]);
+        end
     end
 end
 CWD=reshape(CWD,[spacesize nyrs]);
@@ -769,7 +775,7 @@ for k=1:nyrs;
     I=find(t(:,1)==allyears(k));
     for j=1:prod(spacesize);
         Q=temp(j,I);
-        J=find(Q>1);
+        J=find(Q>=1); % wet days are P >= 1 mm, matching the ETCCDI definition
         PRCPTOT(j,k)=sum(Q(J));
     end
 end
