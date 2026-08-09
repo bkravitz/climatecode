@@ -4,6 +4,21 @@ function WBGT=calcwbgt(Ta,RH,S,p,V,tau,zday,lat)
 % Calculates Wet Bulb Globe Temperature
 % Written by Ben Kravitz (ben.kravitz@pnnl.gov or ben.kravitz.work@gmail.com)
 % Last updated 15 November 2017
+% Corrected 9 August 2026:
+%   (1) saturation/partial vapor pressures now use the exponential
+%       Clausius-Clapeyron form (the exp() was missing in three places,
+%       which understated e_s several-fold at warm temperatures);
+%   (2) calcsza now returns the zenith ANGLE via acos (it previously
+%       returned the cosine, which downstream cos()/tan() calls then
+%       treated as an angle), and the Sun-Earth distance factor no
+%       longer contaminates the geometry (it only scales irradiance);
+%   (3) added Liljegren's solar consistency cap (calc_solar_parameters):
+%       S is rescaled to at most 0.85 of the top-of-atmosphere
+%       irradiance at the current sun angle and zeroed below ~0.5 deg
+%       solar elevation. Without the cap, time-mean solar inputs near
+%       sunrise/sunset blow up the 1/cos(theta) geometry factors by
+%       tens of degrees; fdir is now also clamped to [0, 0.9] as in
+%       the reference model.
 %
 % Based on formulas provided by
 % Liljegren, J. C., R. A. Carhart, P. Lawday, S. Tschopp, and R. Sharp (2008),
@@ -70,18 +85,23 @@ q=spechumid(Ta,RH,p); % specific humidity
 q(q<0)=0;
 cp=cp_air*(1-q)+cp_water*q; % specific heat capacity
 rho=p./(Rv*q+Rd*(1-q))./Ta; % air density
-ea=(RH/100)*611*(Lv/Rv).*(1/273.15-1./Ta); % partial pressure of water vapor
+ea=(RH/100)*611*exp((Lv/Rv)*(1/273.15-1./Ta)); % partial pressure of water vapor
 ea(ea<0)=0;
 eps_a=0.575*(ea/100).^0.143; % emissivity of the atmosphere (empirical formula requires ea in mb)
 
-% Calculating fdir (fraction of S that is direct)
-[theta,rsdist]=calcsza(tau,zday,lat); % calculating solar zenith angle
+% Solar consistency (Liljegren calc_solar_parameters): rescale S to at
+% most 0.85 of the top-of-atmosphere irradiance at the current sun
+% angle, zero it below ~0.5 deg solar elevation, and compute the
+% direct-beam fraction from the rescaled ratio.
+[theta,rsdist]=calcsza(tau,zday,lat); % solar zenith ANGLE (radians)
+Smax=S0*cos(theta).*rsdist; % rsdist is the (r0/r)^2 flux factor
+Smax(theta>89.5*pi/180)=0;
+Sstar=zeros(size(tau));
+I=find(Smax>0);
+Sstar(I)=min(S(I)./Smax(I),0.85);
+S=Sstar.*Smax; % capped (and night-zeroed) solar irradiance
 fdir=zeros(size(tau));
-I=find(theta<=89.5*pi/180);
-Smax=S0*cos(theta)./(rsdist.^2);
-Sstar=S./Smax;
-fdir2=exp(3-1.34*Sstar-1.65./Sstar);
-fdir(I)=fdir2(I);
+fdir(I)=min(max(exp(3-1.34*Sstar(I)-1.65./max(Sstar(I),1e-6)),0),0.9);
 
 mu=calcviscosity(18.27e-6,291.15,Ta,120);
 
@@ -104,7 +124,7 @@ while sum(flags(:))>=numel(flags);
     J=find(flags(:,2)>=1);
     
     FA=sigma*eps_w*(0.5*(1+eps_a(I)).*Ta(I).^4-Tw(I).^4)+(1-alpha_w)*S(I).*((1-fdir(I))*(1+lproj)+fdir(I).*(tan(theta(I))/pi+lproj)+alpha_sfc);
-    ew=611*(Lv/Rv)*(1/273.16-1./Tw(I));
+    ew=611*exp((Lv/Rv)*(1/273.15-1./Tw(I)));
     Twnew=Ta(I)-(Lv./cp(I)).*(M_H2O/M_air).*(Pr(I)./Sc(I)).^0.56.*(ew-ea(I))./(p(I)-ew)+FA./h(I);
     Twnew=0.1*Twnew+0.9*Tw(I);
     dT(I,1)=abs(Tw(I)-Twnew);
@@ -151,8 +171,12 @@ aphel=per+round(daypyr/2);
 zdist=(zday-aphel)/daypyr;
 rsdist=(1+ecc*cos(2*pi*zdist)).^2;
 
-% Calculating theta
-theta=sin(lat).*sin(delta)./rsdist+cos(lat).*cos(delta)./rsdist.*cos(H);
+% Calculating theta: cos(zenith) from the spherical triangle, then the
+% ANGLE via acos. The Sun-Earth distance affects irradiance only --
+% dividing the cosine by rsdist (as before) distorted the geometry.
+coszen=sin(lat).*sin(delta)+cos(lat).*cos(delta).*cos(H);
+coszen=min(max(coszen,-1),1);
+theta=acos(coszen);
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -161,7 +185,7 @@ function q=spechumid(T,RH,p)
 Lv=2.453e6; % Latent heat of vaporization (J/kg)
 Rv=461.5; % ideal gas constant for water vapor (J/kg/K)
 Rd=287.0; % ideal gas constant for dry air (J/kg/K)
-es=611*(Lv/Rv)*(1/273.16-1./T);
+es=611*exp((Lv/Rv)*(1/273.15-1./T));
 ws=es*Rd/Rv./(p-es);
 w=RH/100.*ws;
 q=w./(1+w);
