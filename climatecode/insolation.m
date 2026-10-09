@@ -1,23 +1,42 @@
-function solarFout=insolation(ecc,eps,oma,lat,day)
+function solarFout=insolation(ecc,eps,oma,lat,day,opts)
 % solarFout=insolation(ecc,eps,oma,lat,day)
+% solarFout=insolation(ecc,eps,oma,lat,day,Calendar="realworld")
 %
-% Ben Kravitz (ben.kravitz.work@gmail.com)  12 October 2011
+% Ben Kravitz (bkravitz@iu.edu or ben.kravitz.work@gmail.com)  12 October 2011
 % vectorized by Ben on 12 December 2011
 % vectorization fixed by Ben on 16 February 2012
+% day 0 changed from the winter solstice to the vernal equinox 8 October 2026
+% Calendar option added 8 October 2026 (with Claude); replaces the separate
+%   daily_insolation.m (after I. Eisenman), which used the same Berger (1978)
+%   equations with the real-world calendar, and the HadCM3-convention
+%   insolation.m (Jan 1 = winter solstice, 360-day year)
 %
-% This function calculates insolation received at a given
-% latitude and day for specified Milankovitch parameters.
+% This function calculates daily mean insolation (W/m2) received at
+% the top of the atmosphere at a given latitude and day for specified
+% Milankovitch parameters.
 % ecc = eccentricity (range of values for Earth: 0.005-0.058)
 % eps = obliquity (in radians) (22.1 to 24.5 degrees)
-% oma = solar longitude of perihelion measured from the moving
-%       vernal equinox (ranges in a complete circle from 0 to 2pi)
+% oma = true solar longitude of perihelion measured from the moving
+%       vernal equinox (in radians, 0 to 2pi; present day ~283 degrees)
 % lat = latitude (in radians)
-% day = Julian day (measured from January 1)
+% day = day of the year (see Calendar below)
 %
-% January 1 is specified to always be the winter solstice.
+% Calendar (optional name-value argument) sets how day is counted:
+%   "orbital"   (default) day 0 is the vernal equinox (true solar
+%               longitude l=0) and the year is 360 days long.
+%   "realworld" day is the calendar day of the year (1 = January 1), the
+%               year is 365.2422 days long, and the vernal equinox is fixed
+%               at day 80 (21 March).  This is the convention of Eisenman's
+%               daily_insolation.m.  Fixing the equinox date is an
+%               approximation: for orbits very different from today's the
+%               actual equinox date drifts.
+%   "hadcm3"    HadCM3 / Unified Model convention: 360-day year with day 1
+%               (January 1) at the northern winter solstice (true solar
+%               longitude l=270 degrees).
+% The solar constant is S0=1365 W/m2; modify the code directly to change it.
 %
-% You can modify the code directly if you want to change the
-% length of the year or the solar constant.
+% Output:  solarFout = daily mean insolation (W/m2), of size
+%   [numel(ecc) numel(eps) numel(oma) numel(lat) numel(day)]
 
 %% References
 % Berger, Andre L. (1978), Long-term variations of daily
@@ -28,58 +47,36 @@ function solarFout=insolation(ecc,eps,oma,lat,day)
 % Peixoto, Jose Pinto and Abraham H. Oort (1992),
 % Physics of Climate, 520 pages.
 
+arguments
+    ecc {mustBeNumeric,mustBeReal}
+    eps {mustBeNumeric,mustBeReal}
+    oma {mustBeNumeric,mustBeReal}
+    lat {mustBeNumeric,mustBeReal}
+    day {mustBeNumeric,mustBeReal}
+    opts.Calendar (1,1) string {mustBeMember(opts.Calendar,["orbital","realworld","hadcm3"])} = "orbital"
+end
+
 %% parameter list
-lyear=360.; % length of year (in days)
+% lref = true solar longitude at the reference day dayref
+switch opts.Calendar
+    case "realworld"
+        lyear=365.2422; % length of year (in days)
+        dayref=80;      % vernal equinox on 21 March
+        lref=0;
+    case "hadcm3"
+        lyear=360.;
+        dayref=1;       % winter solstice on January 1
+        lref=-pi/2;
+    otherwise % "orbital"
+        lyear=360.;
+        dayref=0;       % vernal equinox on day 0
+        lref=0;
+end
 S0=1365.; % solar constant (in W/m2)
 
 %% vectorization
-[A B]=size(ecc);
-if B>A;
-    ecc=ecc';
-end
-[A,~]=size(ecc);
-[C D]=size(eps);
-if D>C;
-    eps=eps';
-end
-[C,~]=size(eps);
-[E F]=size(oma);
-if F>E;
-    oma=oma';
-end
-[E,~]=size(oma);
-[G H]=size(lat);
-if H>G;
-    lat=lat';
-end
-[G,~]=size(lat);
-[I J]=size(day);
-if J>I;
-    day=day';
-end
-[I,~]=size(day);
-ecc2=zeros(A*C*E*G*I,1);
-eps2=zeros(A*C*E*G*I,1);
-oma2=zeros(A*C*E*G*I,1);
-lat2=zeros(A*C*E*G*I,1);
-for a1=1:A;
-ecc2((a1-1)*C*E*G*I+1:a1*C*E*G*I)=ecc(a1);
-for a2=1:C;
-eps2((a1-1)*C*E*G*I+(a2-1)*E*G*I+1:a2*E*G*I+(a1-1)*C*E*G*I)=eps(a2);
-for a3=1:E;
-oma2((a1-1)*C*E*G*I+(a2-1)*E*G*I+(a3-1)*G*I+1:(a1-1)*C*E*G*I+(a2-1)*E*G*I+a3*G*I)=oma(a3);
-for a4=1:G;
-lat2((a1-1)*C*E*G*I+(a2-1)*E*G*I+(a3-1)*G*I+(a4-1)*I+1:(a1-1)*C*E*G*I+(a2-1)*E*G*I+(a3-1)*G*I+a4*I)=lat(a4);
-end
-end
-end
-end
-ecc=ecc2;
-eps=eps2;
-oma=oma2;
-lat=lat2;
-clear ecc2 eps2 oma2 lat2;
-day=repmat(day,[A*C*E*G 1]);
+% output is size [numel(ecc) numel(eps) numel(oma) numel(lat) numel(day)]
+[ecc,eps,oma,lat,day]=ndgrid(ecc(:),eps(:),oma(:),lat(:),day(:));
 
 %% convenient quantities to have
 ecc2=ecc.^2;
@@ -88,51 +85,30 @@ beta=(1-ecc2).^(0.5);
 OMEGA=2*pi/lyear; % angular speed of the earth
                   % also mean longitude angle subtended in one day
 
-%% turning Jan 1 into winter solstice
-a=-(pi/2);
-theta=a-oma;
-lmd0term1=(0.5*ecc+0.125*ecc3).*(1+beta).*sin(theta);
-lmd0term2=(0.25*ecc2).*(0.5+beta).*sin(2*theta);
-lmd0term3=(0.125*ecc3).*((1/3)+beta).*sin(3*theta);
-lmd0=a-2*(lmd0term1-lmd0term2+lmd0term3);
-day=day-lmd0/OMEGA;
-
-%% tau=day at perihelion
-tau=oma/OMEGA;
+%% mean longitude on the reference day (Berger 1978 Section 3)
+% lm0 = mean solar longitude where the true longitude is lref (inverse
+% equation of center; lref=0 is the vernal equinox, -pi/2 the winter solstice)
+lm0term1=(0.5*ecc+0.125*ecc3).*(1+beta).*sin(lref-oma);
+lm0term2=(0.25*ecc2).*(0.5+beta).*sin(2*(lref-oma));
+lm0term3=(0.125*ecc3).*((1/3)+beta).*sin(3*(lref-oma));
+lm0=lref-2*(lm0term1-lm0term2+lm0term3);
 
 %%  This section from Berger 1978 Section 3
 % l = solar longitude (angular distance along Earth's orbit)
 % l==0 on the vernal equinox
-% lm = mean solar longitude
-% lm0 = mean solar longitude at l=0
-lm0term1=(0.5*ecc+0.125*ecc3).*(1+beta).*sin(-oma);
-lm0term2=-0.25*ecc2.*(0.5+beta).*sin(-2*oma);
-lm0term3=0.125*ecc3.*(beta+(1/3)).*sin(-3*oma);
-lm0=-2*(lm0term1+lm0term2+lm0term3);
-dlm=(day-tau)*OMEGA;
+% lm = mean solar longitude (increases uniformly in time from lm0 on the
+%      reference day dayref)
+% l is then lm plus the equation of center (oma = longitude of perihelion)
+dlm=(day-dayref)*OMEGA;
 lm=lm0+dlm;
 l=lm+(2*ecc-0.25*ecc3).*sin(lm-oma)+1.25*ecc2.*sin(2*(lm-oma))+(13/12)*ecc3.*sin(3*(lm-oma));
 
 %% This section from Peixoto & Oort and Berger 1978 Appendix
 % delta = solar declination (lat where sun is directly overhead)
-% h = hour angle from the local meridian
 % Ho = hour angle at the horizon (sunrise/sunset)
+% rho = Earth-Sun distance in units of the semi-major axis
 rho=(1-ecc2)./(1+ecc.*cos(l-oma));
 rho2=rho.^2;
 delta=asin(sin(eps).*sin(l));
-Ho=acos(-tan(lat).*tan(delta));
-Ho( ( abs(lat) >= pi/2 - abs(delta) ) & ( lat.*delta > 0 ) )=pi;
-Ho( ( abs(lat) >= pi/2 - abs(delta) ) & ( lat.*delta <= 0 ) )=0;
-solarF = (S0/pi)*(Ho.*sin(lat).*sin(delta)+cos(lat).*cos(delta).*sin(Ho))./rho2;
-solarFout=zeros(A,C,E,G,I);
-for a1=1:A;
-for a2=1:C;
-for a3=1:E;
-for a4=1:G;
-for a5=1:I;
-solarFout(a1,a2,a3,a4,a5)=solarF((a1-1)*C*E*G*I+(a2-1)*E*G*I+(a3-1)*G*I+(a4-1)*I+a5);
-end
-end
-end
-end
-end
+Ho=acos(min(max(-tan(lat).*tan(delta),-1),1)); % pi = polar day, 0 = polar night
+solarFout = (S0/pi)*(Ho.*sin(lat).*sin(delta)+cos(lat).*cos(delta).*sin(Ho))./rho2;

@@ -1,0 +1,5 @@
+.DS_Store
+
+# MathWorks-copyrighted toolbox code: kept locally, not redistributed
+climatecode/snr.m
+climatecode/ttest2_modified.m

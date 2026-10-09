@@ -1,123 +1,162 @@
-function outvals=tripolarconversion(inputfield,varname,inputlatvertices,inputlonvertices,latbnds,lonbnds)
+function outvals=tripolarconversion(inputfield,varname,inputlatvertices,inputlonvertices,latbnds,lonbnds) %#ok<INUSL>
 
-% function outvals=tripolarconversion(filename,varname,latbnds,lonbnds)
-% Written by Ben Kravitz (ben.kravitz@pnnl.gov or ben.kravitz.work@gmail.com) 9 May 2014
+% TRIPOLARCONVERSION  Area-weighted regridding of quadrilateral (e.g. tripolar ocean) grids to lat-lon
+%
+% outvals=tripolarconversion(inputfield,varname,inputlatvertices,inputlonvertices,latbnds,lonbnds)
+% Written by Ben Kravitz (bkravitz@iu.edu or ben.kravitz.work@gmail.com) 9 May 2014
 %
 % This function is designed to convert tripolar ocean grids (or any grids characterized
-% by irregular quadrilaterals) to lat-lon grids.
+% by irregular quadrilaterals) to lat-lon grids.  Each lat-lon box gets the
+% area-weighted mean of the quadrilaterals that overlap it (first-order
+% conservative remapping).  Missing values (NaN, e.g. land) are left out of
+% the mean; boxes with no valid data are NaN.
 %
-% Inputs:  inputfield       - the data you are converting
-%          varname          - the variable name of the data
-%          inputlatvertices - an array of the latitudes of the vertices of each quadrilateral
-%          inputlonvertices - an array of the latitudes of the vertices of each quadrilateral
+% Inputs:  inputfield       - the data you are converting, I1 x I2 x nt (nt optional, e.g. time)
+%          varname          - the variable name of the data (not used; kept for compatibility)
+%          inputlatvertices - the latitudes (degrees) of the 4 vertices of each quadrilateral,
+%                             4 x I1 x I2 (I1 x I2 x 4 is also accepted), vertices in
+%                             order around the cell (as in CMORized lat_vertices/vertices_latitude)
+%          inputlonvertices - the longitudes (degrees) of the vertices, same size; any
+%                             convention (0-360 or -180-180)
 %          latbnds          - the boundaries (edges) of the latitudes that you want, e.g., [-90 -88.75-0.625:1.25:88.75+0.625 90]
-%          lonbnds  - the boundaries (edges) of the longitudes that you want
+%          lonbnds          - the boundaries (edges) of the longitudes that you want, e.g. 0:2.5:360
+%                             (any convention; the input longitudes are wrapped to match)
 %
-% This script assumes that there are variables 'lat_vertices' and 'lon_vertices' in the input
-%   file that describe the lat-lon coordinates of the vertices of the irregular quadrilaterals.
-%   This should be the case for CMORized data, but it may not be true generically.  The script
-%   should be easy to modify if you need to specify these vertices.
+% Output:  outvals          - (numel(lonbnds)-1) x (numel(latbnds)-1) x nt, i.e. lon x lat x nt
+%
+% Method:
+%   1) Collect the vertices of the quadrilaterals and of the lat-lon grid.
+%   2) Form a constrained Delaunay triangulation of all of these points, with
+%      the edges of both grids as constraints (intersections of edges are added
+%      as points).  Each triangle then lies in exactly one quadrilateral and
+%      at most one lat-lon box.
+%   3) Each triangle takes the value of the quadrilateral containing it.  Its
+%      area is the planar area in lon-lat times cos(latitude) of its centroid
+%      (i.e. the area on the sphere, to second order in the triangle size).
+%   4) Inside each lat-lon box, take the area-weighted average of all of the
+%      triangles contained in that box.
+%   5) Then we win.
+% Assumptions: cell edges are straight lines in lon-lat space, no
+% quadrilateral contains a pole, and cells are not wider than 180 degrees
+% of longitude.  A cell crossing the longitude seam of the output grid is
+% split between the two ends of the grid.
+%
+% Bug fixes 8 October 2026 (with Claude):
+%   - The Delaunay triangulation was unconstrained, so triangles could
+%     straddle cell and box edges and be assigned to the wrong cell/box;
+%     now constrained by both grids' edges.
+%   - Triangle areas now include cos(latitude) (previously planar lon-lat
+%     area, overweighting high latitudes within a box).
+%   - Cells crossing the 0/360 meridian lost their part east of 0, and
+%     input/output longitude conventions (0-360 vs -180-180) were not
+%     reconciled; both fixed.
+%   - A triangle missing data at any time was dropped at all times; now
+%     the missing-data mask is applied separately for each time.
+%   - Replaced DelaunayTri/incenters (deprecated) and nansum (Statistics
+%     Toolbox) with base MATLAB; much faster (no inpolygon loops).
+%   Results change near cell edges, near the seam, and slightly at high
+%   latitudes.  Constant fields are reproduced exactly.
 
-I=size(inputfield);
-if numel(I)<3;
-    I(3)=1;
+% ---- checking inputs and flattening the arrays
+I=size(inputfield,[1 2]);
+nt=numel(inputfield)/prod(I);
+ncell=prod(I);
+if ~isequal(size(inputlatvertices),size(inputlonvertices))
+    error('tripolarconversion: lat and lon vertex arrays must be the same size.');
 end
-% flattening the ocean array
-tos2=zeros(I(1)*I(2),I(3));
-for k=1:I(1);
-    tos2((k-1)*I(2)+1:k*I(2),:)=inputfield(k,:,:);
+if size(inputlatvertices,1)~=4 && size(inputlatvertices,3)==4 % I1 x I2 x 4
+    inputlatvertices=permute(inputlatvertices,[3 1 2]);
+    inputlonvertices=permute(inputlonvertices,[3 1 2]);
 end
-
-% flattening the arrays of the grid "box" vertices
-latv2=zeros(4,I(1)*I(2));
-lonv2=zeros(4,I(1)*I(2));
-for k=1:I(1);
-    latv2(:,(k-1)*I(2)+1:k*I(2))=inputlatvertices(:,k,:);
-    lonv2(:,(k-1)*I(2)+1:k*I(2))=inputlonvertices(:,k,:);
+if numel(inputlatvertices)~=4*ncell || size(inputlatvertices,1)~=4
+    error('tripolarconversion: vertex arrays must be 4 x I1 x I2, matching inputfield.');
 end
-
-% fixing the longitude list in case a quadrilateral spans the 0 longitude meridian
-for k=1:length(lonv2);
-    blah=lonv2(:,k);
-    a=[abs(blah(1)-blah(2)) abs(blah(1)-blah(3)) abs(blah(1)-blah(4)) abs(blah(2)-blah(3)) abs(blah(2)-blah(4)) abs(blah(3)-blah(4))];
-    Q=find(a>300);
-    if isempty(Q)==0;
-        J=find(blah<180);
-        blah(J)=blah(J)+360;
-        lonv2(:,k)=blah;
-    end
+latbnds=double(latbnds(:));
+lonbnds=double(lonbnds(:));
+if numel(latbnds)<2 || numel(lonbnds)<2 || any(diff(latbnds)<=0) || any(diff(lonbnds)<=0)
+    error('tripolarconversion: latbnds and lonbnds must be increasing, with at least 2 values.');
 end
-
-% the latitude and longitude bounds that you actually want
-II=size(latbnds);
-if II(2)>II(1);latbnds=transpose(latbnds);end
-II=size(lonbnds);
-if II(2)>II(1);lonbnds=transpose(lonbnds);end
-lat2=transpose(repmat(latbnds,[1 length(lonbnds)]));
-lon2=repmat(lonbnds,[1 length(latbnds)]);
-J=length(latbnds);
-K=length(lonbnds);
-
-% formulating a Delaunay Triangulation of the domain
-% Essentially, what we are doing is:
-%   1) Figure out all of the vertices of the tripolar grid
-%   2) Figure out all of the vertices of the lat-lon grid
-%   3) Collect all of these vertices into one huge mass of points
-%   4) Form a triangulation with all of these points such that no triangle overlaps.  This is called a Delaunay Triangulation.
-%      The advantage is that now each triangle fits exactly within one irregular quadrilateral from the polar grid and exactly
-%      one lat-lon grid box.
-%   5) Then we assign a value (e.g., sea surface temperature) to each triangle based on the value of the irregular quadrilateral.
-%      Inside each lat-lon grid box, we then perform an area-weighted average of all of the triangles contained in that box.
-%   6) Then we win.
-
-% Forming the Delaunay Triangulation using a built in matlab function
-% The triangulation will output a structure with two entries:
-% DTX.X is a list of the coordinates of the vertices (in lat-lon)
-% DTX.Triangulation gives a list of the vertices associated with each simplex (triangle).  The simplices are numbered by matlab.
-DTX=DelaunayTri(cat(1,double(reshape(inputlonvertices,[4*I(1)*I(2) 1])),reshape(lon2,[K*J 1])),cat(1,double(reshape(inputlatvertices,[4*I(1)*I(2) 1])),reshape(lat2,[K*J 1])));
-SV=DTX.Triangulation;
-
-% returns the centers of the simplices (triangles) created by the triangulation (in lat-lon)
-Xcenters=incenters(DTX);
-
-% This finds the area of each simplex using a formula for an arbitrary triangle
-% This is done using the determinant function (det) and can take a bit of time.
-areass=zeros(length(Xcenters),1);
-for k=1:length(Xcenters);
-    areass(k)=0.5*abs(det([DTX.X(SV(k,1),1) DTX.X(SV(k,2),1) DTX.X(SV(k,3),1) ; DTX.X(SV(k,1),2) DTX.X(SV(k,2),2) DTX.X(SV(k,3),2) ; 1 1 1]*pi/180));
+if lonbnds(end)-lonbnds(1)>360+1e-9
+    error('tripolarconversion: lonbnds must span at most 360 degrees.');
 end
+J=numel(latbnds);
+K=numel(lonbnds);
 
-% if a simplex is in a grid "box" (determined using inpolygon), give the simplex that value (vallist)
-% inpolygon can take a bit of time
-% if you are not careful, this step can use a LOT of memory
-vallist=zeros(length(Xcenters),I(3));
-valcount=zeros(length(Xcenters),I(3));
-for j=1:length(lonv2);
-    INC=inpolygon(Xcenters(:,1),Xcenters(:,2),[lonv2(1,j) ; lonv2(2,j) ; lonv2(3,j) ; lonv2(4,j) ;lonv2(1,j)],[latv2(1,j) ; latv2(2,j) ; latv2(3,j) ; latv2(4,j) ;latv2(1,j)]);
-    Q=find(INC==1);
-    JJ=1-isnan(tos2(j,:));
-    blah=squeeze(nansum(cat(3,vallist(Q,:),repmat(tos2(j,:),[length(Q) 1])),3));
-    vallist(Q,:)=blah;
-    blah=valcount(Q,:)+repmat(JJ,[length(Q) 1]).*ones(length(Q),I(3));
-    valcount(Q,:)=blah;
-end
+vals=reshape(double(inputfield),ncell,nt);          % cell values, ncell x nt
+latv2=reshape(double(inputlatvertices),4,ncell);    % vertices, 4 x ncell
+lonv2=reshape(double(inputlonvertices),4,ncell);
 
-% determining the average value in each simplex
-% this is sort of a formality because the value in each simplex should be defined by the "box" containing it, but this is a clean way of taking care of missing values
-vallist=vallist./valcount;
+% ---- longitudes: wrap to [lonbnds(1), lonbnds(1)+360) to match the output
+% grid, then unwrap cells that cross that seam and add a copy of each of them
+% shifted by -360, so both ends of the output grid are covered
+lon0=lonbnds(1);
+lonv2=lon0+mod(lonv2-lon0,360);
+cross=(max(lonv2,[],1)-min(lonv2,[],1))>180;
+lonv2(:,cross)=lonv2(:,cross)+360*(lonv2(:,cross)<lon0+180);
+cellid=[1:ncell find(cross)];                       % source cell of each polygon
+lonv2=[lonv2 lonv2(:,cross)-360];
+latv2=[latv2 latv2(:,cross)];
+npoly=numel(cellid);
 
-outvals=zeros(K-1,J-1,I(3));
-outcount=zeros(K-1,J-1);
-for i=1:K-1;
-    for j=1:J-1;
-        IN=inpolygon(Xcenters(:,1),Xcenters(:,2),[lonbnds(i) lonbnds(i+1) lonbnds(i+1) lonbnds(i) lonbnds(i)],[latbnds(j) latbnds(j) latbnds(j+1) latbnds(j+1) latbnds(j)]);
-        Q=find(IN==1);
-        QQ=find(sum(isnan(vallist(Q,:))==1,2)>0);
-        IN(Q(QQ))=0;
-        Q=find(IN==1);
-        outcount(i,j)=sum(areass.*IN);
-        outvals(i,j,:)=outvals(i,j,:)+reshape(nansum(vallist(Q,:).*repmat(areass(Q).*IN(Q),[1 I(3)]),1),[1 1 I(3)]);
-    end
-end
-outcount=repmat(outcount,[1 1 I(3)]);
-outvals=outvals./outcount;
+% ---- points and constraint edges of both grids
+[LO,LA]=ndgrid(lonbnds,latbnds);                    % lat-lon grid nodes, K x J
+nodeid=reshape(1:K*J,K,J);
+gridedges=[reshape(nodeid(1:K-1,:),[],1) reshape(nodeid(2:K,:),[],1) ; ...  % along latitude lines
+    reshape(nodeid(:,1:J-1),[],1) reshape(nodeid(:,2:J),[],1)];             % along meridians
+pts=[lonv2(:) latv2(:) ; LO(:) LA(:)];
+quadid=reshape(1:4*npoly,4,npoly);
+quadedges=[reshape(quadid,[],1) reshape(quadid([2 3 4 1],:),[],1)];
+edges=[quadedges ; gridedges+4*npoly];
+
+% remove duplicate points (shared vertices) and degenerate/duplicate edges
+[P,~,ic]=uniquetol(pts,1e-10,'ByRows',true,'DataScale',1);
+edges=ic(edges);
+edges=edges(edges(:,1)~=edges(:,2),:);
+edges=unique(sort(edges,2),'rows');
+
+% ---- constrained Delaunay triangulation
+% (splitting intersecting edges is expected, so those warnings are turned off)
+ws=[warning('off','MATLAB:delaunayTriangulation:ConsConsSplitWarnId') ...
+    warning('off','MATLAB:delaunayTriangulation:ConsSplitPtWarnId') ...
+    warning('off','MATLAB:delaunayTriangulation:DupPtsConsUpdatedWarnId')];
+DT=delaunayTriangulation(P,edges);
+warning(ws);
+T=DT.ConnectivityList;
+X=DT.Points;
+xc=(X(T(:,1),1)+X(T(:,2),1)+X(T(:,3),1))/3;         % triangle centroids (lon, lat)
+yc=(X(T(:,1),2)+X(T(:,2),2)+X(T(:,3),2))/3;
+% area of each triangle on the unit sphere: planar area (radians^2) times cos(lat)
+areass=0.5*abs((X(T(:,2),1)-X(T(:,1),1)).*(X(T(:,3),2)-X(T(:,1),2)) - ...
+    (X(T(:,3),1)-X(T(:,1),1)).*(X(T(:,2),2)-X(T(:,1),2)))*(pi/180)^2.*cosd(yc);
+
+% ---- which lat-lon box contains each triangle
+ib=discretize(xc,lonbnds);
+jb=discretize(yc,latbnds);
+
+% ---- which quadrilateral contains each triangle: split each quadrilateral
+% into two triangles along a diagonal that lies inside it, and locate the
+% centroids in that triangulation
+qx=lonv2;
+qy=latv2;
+% vertices 2 and 4 on opposite sides of diagonal 1-3 -> use 1-3, else 2-4
+s2=(qx(3,:)-qx(1,:)).*(qy(2,:)-qy(1,:))-(qy(3,:)-qy(1,:)).*(qx(2,:)-qx(1,:));
+s4=(qx(3,:)-qx(1,:)).*(qy(4,:)-qy(1,:))-(qy(3,:)-qy(1,:)).*(qx(4,:)-qx(1,:));
+use13=(s2.*s4<=0);
+tri1=[quadid(1,:) ; quadid(2,:) ; quadid(3,:)];
+tri2=[quadid(1,:) ; quadid(3,:) ; quadid(4,:)];
+tri1(:,~use13)=[quadid(2,~use13) ; quadid(3,~use13) ; quadid(4,~use13)];
+tri2(:,~use13)=[quadid(2,~use13) ; quadid(4,~use13) ; quadid(1,~use13)];
+TRq=triangulation([tri1' ; tri2'],[lonv2(:) latv2(:)]);
+tq=pointLocation(TRq,[xc yc]);
+src=NaN(size(tq));
+ok=~isnan(tq);
+src(ok)=cellid(mod(tq(ok)-1,npoly)+1);              % triangle -> polygon -> cell
+
+% ---- area-weighted averages in each lat-lon box
+use=~isnan(ib) & ~isnan(jb) & ~isnan(src) & areass>0;
+box=sub2ind([K-1 J-1],ib(use),jb(use));
+A=sparse(box,src(use),areass(use),(K-1)*(J-1),ncell); % overlap area of each box with each cell
+valid=~isnan(vals);
+vals(~valid)=0;
+outvals=full(A*vals)./full(A*double(valid));          % 0/0 = NaN where no valid data
+outvals=reshape(outvals,[K-1 J-1 nt]);
